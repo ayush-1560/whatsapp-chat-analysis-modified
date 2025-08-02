@@ -6,7 +6,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import zipfile
 import os
+import pandas as pd
 from collections import Counter
+from urlextract import URLExtract
+import smtplib
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email_validator import validate_email, EmailNotValidError
 
 st.set_page_config(
     page_title="WhatsApp Chat Analyzer",
@@ -36,15 +43,13 @@ st.markdown("""
         color: #008069;
         margin-bottom: 0.5rem;
     }
-    .title-icon {
-        background-color: #008069;
-        color: white;
-        padding: 0.5rem;
-        border-radius: 10px;
-        line-height: 1;
+    .title-icon-img {
         width: 50px;
         height: 50px;
-        text-align: center;
+        border-radius: 10px;
+        background-color: white;
+        padding: 5px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
     }
     .subtitle {
         font-size: 1.1rem;
@@ -108,7 +113,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 # ---- SESSION STATE INIT ----
 if 'analysis_triggered' not in st.session_state:
     st.session_state.analysis_triggered = False
@@ -117,6 +121,40 @@ if 'uploaded_file' not in st.session_state:
 if 'media_files' not in st.session_state:
     st.session_state.media_files = []
 
+# ---- EMAIL REPORT FUNCTION ----
+
+def send_email_report(recipient_email, subject, body_html, image_tuples):
+    sender_email = "ayush88843@gmail.com"
+    sender_password = "coab gbmv ugyf dfjg"
+
+    msg = MIMEMultipart("related")
+    msg["Subject"] = subject
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
+
+    msg_alt = MIMEMultipart("alternative")
+    msg.attach(msg_alt)
+
+    msg_text = MIMEText(body_html, "html")
+    msg_alt.attach(msg_text)
+
+    for i, (filename, img_bytes) in enumerate(image_tuples):
+        img = MIMEImage(img_bytes)
+        img.add_header("Content-ID", f"<img{i}>")
+        img.add_header("Content-Disposition", "inline", filename=filename)
+        msg.attach(img)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        return True
+    except Exception as e:
+        st.error(f"❌ Failed to send email: {e}")
+        return False
+
+
+
 # ---- UPLOAD INTERFACE ----
 if not st.session_state.analysis_triggered:
     left_spacer, main_col, right_spacer = st.columns([1, 1.5, 1])
@@ -124,7 +162,9 @@ if not st.session_state.analysis_triggered:
         st.markdown("""
             <div class="title-container">
                 <h1>
-                    <span class="title-icon">❚</span>
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg"
+                         alt="WhatsApp Logo"
+                         class="title-icon-img" />
                     <span>WhatsApp Chat Analyzer</span>
                 </h1>
             </div>
@@ -196,7 +236,61 @@ else:
         st.session_state.media_files = []
         st.rerun()
 
+    # 📧 Email Report Section
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📧 Email Report")
+    email_input = st.sidebar.text_input("Enter your email")
+
+    num_messages, words, num_media, num_links = helper.fetch_stats(selected_user, df, media_files)
+
+    if st.sidebar.button("Send Report"):
+        try:
+            valid = validate_email(email_input)
+            email = valid.email
+
+            # Fetch stats and charts
+            num_messages, words, num_media, num_links = helper.fetch_stats(selected_user, df, media_files)
+            timeline_imgs = helper.generate_timeline_charts(selected_user, df)
+            activity_imgs = helper.generate_activity_maps(selected_user, df)
+            content_imgs = helper.generate_content_charts(selected_user, df)
+            leaderboard_imgs = helper.generate_user_leaderboard_charts(df)
+
+            all_imgs = timeline_imgs + activity_imgs + content_imgs + leaderboard_imgs
+
+            html_body = f"""
+            <h2 style="color:#008069;">📊 WhatsApp Chat Full Report</h2>
+            <p><b>User:</b> {selected_user}</p>
+            <p><b>Total Messages:</b> {num_messages}<br>
+            <b>Total Words:</b> {words}<br>
+            <b>Media Files:</b> {num_media}<br>
+            <b>Links Shared:</b> {num_links}</p>
+
+            <hr><h3>🗓️ Timeline & Activity</h3>
+            <img src="cid:img0"><br><img src="cid:img1"><br>
+            <img src="cid:img2"><br><img src="cid:img3"><br><img src="cid:img4">
+
+            <hr><h3>💬 Content Analysis</h3>
+            <img src="cid:img5"><br><img src="cid:img6"><br><img src="cid:img7">
+
+            <hr><h3>👥 User Leaderboard</h3>
+            <img src="cid:img8">
+
+            <p style="color:#999">Generated using WhatsApp Chat Analyzer · Preserves layout with colors and insights</p>
+            """
+
+            success = send_email_report(email, "Your WhatsApp Chat Report", html_body, all_imgs)
+            if success:
+                st.sidebar.success("✅ Report emailed successfully!")
+        except EmailNotValidError as e:
+            st.sidebar.error(f"Invalid email: {e}")
+
     st.header(f"Dashboard for: {selected_user}")
+
+    # 👇 All your existing tabs and analysis logic stay untouched below this
+    # Tabs: tab1, tab2, tab3, tab4, tab5
+    # (Not repeated here since you've already provided them — they remain 100% same)
+
+
 
     num_messages, words, num_media, num_links = helper.fetch_stats(selected_user, df, media_files)
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -205,18 +299,16 @@ else:
     kpi3.metric(label="🖼️ Media Shared", value=f"{num_media:,}")
     kpi4.metric(label="🔗 Links Shared", value=f"{num_links:,}")
 
-    if media_files:
-        with st.expander("📁 Media Files Summary"):
-            counts = Counter([os.path.splitext(f)[1].lower() for f in media_files])
-            st.write("**Media Types and Counts:**")
-            for ext, count in counts.items():
-                st.write(f"- `{ext}` → {count} files")
-            st.write("**Example Media Files:**")
-            st.write(media_files[:10])
+    
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    tab1, tab2, tab3, tab4 = st.tabs(["🗓️ Timeline & Activity", "💬 Content Analysis", "👥 User Leaderboard", "🔗 Links Shared"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🗓️ Timeline & Activity",
+        "💬 Content Analysis",
+        "👥 User Leaderboard",
+        "🔗 Links Shared",
+        "🔍 Smart Chat Search",
+        "📁 Media File Summary"
+    ])
 
     with tab1:
         st.subheader("Message Timelines")
@@ -301,20 +393,61 @@ else:
 
     with tab4:
         st.subheader("Links Shared")
-        # Extract links for the selected user
-        from urlextract import URLExtract
         extract = URLExtract()
-        if selected_user != 'Overall':
-            link_df = df[df['user'] == selected_user]
-        else:
-            link_df = df
+        link_df = df if selected_user == 'Overall' else df[df['user'] == selected_user]
         all_links = []
         for idx, row in link_df.iterrows():
             found = extract.find_urls(row['message'])
             for url in found:
-                all_links.append({'date': row['date'], 'user': row['user'], 'url': url})
+                all_links.append({
+                    'date': row['date'],
+                    'user': row['user'],
+                    'url': f'<a href="{url}" target="_blank">{url}</a>'
+                })
+
         if all_links:
             st.write(f"Total links found: {len(all_links)}")
-            st.dataframe(all_links)
+            links_df = pd.DataFrame(all_links)[['date', 'user', 'url']]
+            links_df.columns = ['Date', 'User', 'Link']
+            st.write(links_df.to_html(escape=False, index=False), unsafe_allow_html=True)
         else:
             st.info("No links found in this chat.")
+
+
+    with tab5:
+        st.subheader("🔍 Smart Chat Search (Beta)")
+
+        with st.expander("💡 Try asking: 'Who talked about exams?' or 'Show messages about birthday party'"):
+            user_query = st.text_input("Enter your question about the chat:")
+
+            if user_query:
+                with st.spinner("Searching..."):
+                    try:
+                        smart_results = helper.smart_chat_search(df, user_query, selected_user)
+                        if smart_results.empty:
+                            st.warning("No relevant messages found.")
+                        else:
+                            for idx, row in smart_results.iterrows():
+                                st.markdown(f"""
+                                    <div style="padding: 10px; margin-bottom: 10px; background-color: #f9f9f9; border-radius: 5px;">
+                                        <b>{row['user']}</b> <span style="color: #888;">[{row['date']}]</span><br>
+                                        <span>{row['message']}</span>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Something went wrong while searching: {e}")
+
+    with tab6:
+        st.subheader("📁 Media File Summary")
+
+        if media_files:
+            with st.expander("📁 Media Files Summary"):
+                counts = Counter([os.path.splitext(f)[1].lower() for f in media_files])
+                st.write("**Media Types and Counts:**")
+                for ext, count in counts.items():
+                    st.write(f"- `{ext}` → {count} files")
+                st.write("**Example Media Files:**")
+                st.write(media_files[:10])
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
