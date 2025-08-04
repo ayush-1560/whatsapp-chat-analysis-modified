@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import io
-
+import re
 
 extract = URLExtract()
 
@@ -136,30 +136,53 @@ def activity_heatmap(selected_user, df):
     return df.pivot_table(index='day_name', columns='period', values='message', aggfunc='count').fillna(0)
 
 
-# 🔍 SMART CHAT SEARCH
-def smart_chat_search(df, query, selected_user="Overall", top_n=10):
+# 🔍 IMPROVED SMART CHAT SEARCH (WhatsApp-style first, then semantic fallback)
+def smart_chat_search(df, query, selected_user="Overall", top_n=10, threshold=0.45, context_window=2):
     if selected_user != "Overall":
         df = df[df['user'] == selected_user]
 
     df = df[df['message'].str.strip() != '']
-    df = df[~df['message'].str.contains('<Media omitted>', na=False)]
+    df = df[~df['message'].str.contains('<Media omitted>', na=False)].reset_index(drop=True)
 
-    messages = df['message'].tolist()
-    if not messages:
-        return pd.DataFrame(columns=["user", "date", "message", "score"])
+    # Try keyword match first
+    pattern = r'\b' + re.escape(query) + r'\b'
+    keyword_matches = df[df['message'].str.contains(pattern, case=False, na=False, regex=True)]
+    if not keyword_matches.empty:
+        matched_indices = keyword_matches.index.tolist()
+    else:
+        # Fallback to semantic search
+        messages = df['message'].tolist()
+        if not messages:
+            return []
 
-    message_embeddings = embedder.encode(messages, convert_to_tensor=True)
-    query_embedding = embedder.encode(query, convert_to_tensor=True)
+        message_embeddings = embedder.encode(messages, convert_to_tensor=True)
+        query_embedding = embedder.encode(query, convert_to_tensor=True)
 
-    similarities = cosine_similarity(
-        [query_embedding.cpu().numpy()], message_embeddings.cpu().numpy()
-    )[0]
+        similarities = cosine_similarity(
+            [query_embedding.cpu().numpy()], message_embeddings.cpu().numpy()
+        )[0]
 
-    df = df.copy()
-    df['score'] = similarities
-    df_sorted = df.sort_values(by='score', ascending=False).head(top_n)
+        df['score'] = similarities
+        matched_indices = df[df['score'] >= threshold].sort_values(by='score', ascending=False).head(top_n).index.tolist()
 
-    return df_sorted[['user', 'date', 'message', 'score']]
+    # Now gather surrounding messages for context
+    context_blocks = []
+    seen = set()
+    for idx in matched_indices:
+        start = max(0, idx - context_window)
+        end = min(len(df), idx + context_window + 1)
+        for i in range(start, end):
+            if i not in seen:
+                context_blocks.append((i, df.loc[i]))
+                seen.add(i)
+
+    # Sort by index to preserve flow
+    context_blocks.sort(key=lambda x: x[0])
+
+    return [df.loc[i] for i in sorted(seen)]
+
+
+
 
 # 🔍 Email Reports Content 
 def generate_timeline_charts(selected_user, df):
@@ -180,6 +203,7 @@ def generate_timeline_charts(selected_user, df):
     imgs.append(('daily.png', buf.getvalue()))
 
     return imgs
+
 
 def generate_activity_maps(selected_user, df):
     imgs = []
@@ -210,6 +234,7 @@ def generate_activity_maps(selected_user, df):
         imgs.append(('heatmap.png', buf.getvalue()))
 
     return imgs
+
 
 def generate_content_charts(selected_user, df):
     imgs = []
@@ -243,6 +268,7 @@ def generate_content_charts(selected_user, df):
         imgs.append(('emoji.png', buf.getvalue()))
 
     return imgs
+
 
 def generate_user_leaderboard_charts(df):
     imgs = []

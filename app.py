@@ -1,4 +1,5 @@
 import streamlit as st
+import re
 import preprocessor
 import helper
 import plotly.express as px
@@ -414,28 +415,85 @@ else:
             st.info("No links found in this chat.")
 
 
-    with tab5:
-        st.subheader("🔍 Smart Chat Search (Beta)")
+    import re  # Ensure this is at the top of app.py
 
-        with st.expander("💡 Try asking: 'Who talked about exams?' or 'Show messages about birthday party'"):
-            user_query = st.text_input("Enter your question about the chat:")
+with tab5:
+    st.subheader("🔍 Smart Chat Search (Beta)")
 
-            if user_query:
-                with st.spinner("Searching..."):
-                    try:
-                        smart_results = helper.smart_chat_search(df, user_query, selected_user)
-                        if smart_results.empty:
-                            st.warning("No relevant messages found.")
-                        else:
-                            for idx, row in smart_results.iterrows():
+    with st.expander("💡 Try asking: 'Who talked about exams?' or 'Show messages about birthday party'"):
+        user_query = st.text_input("Enter your question about the chat:")
+
+        if user_query:
+            with st.spinner("Searching..."):
+                try:
+                    chat_results = helper.smart_chat_search(df, user_query, selected_user)
+
+                    if not chat_results:
+                        st.warning("🔍 No relevant messages found for your query.")
+                    else:
+                        st.success("💬 Found relevant conversation blocks:")
+
+                        current_block = []
+                        previous_index = -10
+                        keywords = user_query.strip().split()
+
+                        for i, row in enumerate(chat_results):
+                            message_text = row['message']
+
+                            if row.name - previous_index > 3 and current_block:
+                                st.markdown('''
+                                    <div style="background: #e8f5e9; padding: 16px; border-left: 6px solid #00b386; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
+                                ''', unsafe_allow_html=True)
+                                for msg in current_block:
+                                    st.markdown(f"""
+                                        <div style="margin-bottom: 12px;">
+                                            <b style="color: #00664b;">{msg['user']}</b>
+                                            <span style="color: #777;">[{msg['date']}]</span><br>
+                                            <span style="color: #111; line-height: 1.6;">{msg['highlighted']}</span>
+                                        </div>
+                                    """, unsafe_allow_html=True)
+                                st.markdown("</div>", unsafe_allow_html=True)
+                                current_block = []
+
+                            # Highlight keywords (case-insensitive)
+                            highlighted_message = message_text
+                            for word in keywords:
+                                if word.strip() == "":
+                                    continue
+                                pattern = re.compile(re.escape(word), re.IGNORECASE)
+                                highlighted_message = pattern.sub(
+                                    lambda m: f"<span style='background-color: #fff176; font-weight:bold; color:#000;'>{m.group(0)}</span>",
+                                    highlighted_message
+                                )
+
+                            current_block.append({
+                                'user': row['user'],
+                                'date': row['date'],
+                                'highlighted': highlighted_message
+                            })
+                            previous_index = row.name
+
+                        if current_block:
+                            st.markdown('''
+                                <div style="background: #e8f5e9; padding: 16px; border-left: 6px solid #00b386; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
+                            ''', unsafe_allow_html=True)
+                            for msg in current_block:
                                 st.markdown(f"""
-                                    <div style="padding: 10px; margin-bottom: 10px; background-color: #f9f9f9; border-radius: 5px;">
-                                        <b>{row['user']}</b> <span style="color: #888;">[{row['date']}]</span><br>
-                                        <span>{row['message']}</span>
+                                    <div style="margin-bottom: 12px;">
+                                        <b style="color: #00664b;">{msg['user']}</b>
+                                        <span style="color: #777;">[{msg['date']}]</span><br>
+                                        <span style="color: #111; line-height: 1.6;">{msg['highlighted']}</span>
                                     </div>
                                 """, unsafe_allow_html=True)
-                    except Exception as e:
-                        st.error(f"Something went wrong while searching: {e}")
+                            st.markdown("</div>", unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Something went wrong while searching: {e}")
+
+
+
+
+
 
     with tab6:
         st.subheader("📁 Media File Summary")
