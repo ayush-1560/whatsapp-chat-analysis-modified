@@ -14,267 +14,58 @@ import io
 import re
 
 extract = URLExtract()
-
-# Load the sentence transformer model once
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
-
 
 def fetch_stats(selected_user, df, media_files=None):
     if selected_user != 'Overall':
         df = df[df['user'] == selected_user]
 
-    num_messages = df.shape[0]
+    words = sum(len(msg.split()) for msg in df['message'])
+    links = sum(len(extract.find_urls(msg)) for msg in df['message'])
 
-    words = []
-    for message in df['message']:
-        words.extend(message.split())
-
-    media_count = len(media_files) if media_files else df[df['message'] == '<Media omitted>\n'].shape[0]
-
-    links = []
-    for message in df['message']:
-        links.extend(extract.find_urls(message))
-
-    return num_messages, len(words), media_count, len(links)
-
+    media_count = len(media_files) if media_files else 0
+    return df.shape[0], words, media_count, links
 
 def most_busy_users(df):
-    x = df['user'].value_counts().head()
-    percent_df = round((df['user'].value_counts() / df.shape[0]) * 100, 2).reset_index().rename(
-        columns={'index': 'name', 'user': 'percent'})
-    return x, percent_df
-
+    counts = df['user'].value_counts()
+    percent = round((counts / counts.sum()) * 100, 2)
+    percent_df = percent.reset_index().rename(columns={"index": "user", "user": "percent"})
+    return counts.head(), percent_df
 
 def create_wordcloud(selected_user, df):
-    if not os.path.exists('stop_hinglish.txt'):
-        return WordCloud(width=500, height=500).generate("No stopword file found.")
-
-    with open('stop_hinglish.txt', 'r', encoding='utf-8') as f:
-        stop_words = f.read()
-
     if selected_user != 'Overall':
         df = df[df['user'] == selected_user]
 
-    temp = df[df['user'] != 'group_notification']
-    temp = temp[temp['message'] != '<Media omitted>\n']
-
-    def remove_stop_words(message):
-        return " ".join([word for word in message.lower().split() if word not in stop_words])
-
-    wc = WordCloud(width=500, height=500, min_font_size=10, background_color='white')
-    temp['message'] = temp['message'].apply(remove_stop_words)
-    return wc.generate(temp['message'].str.cat(sep=" "))
-
-
-def most_common_words(selected_user, df):
-    if not os.path.exists('stop_hinglish.txt'):
-        return pd.DataFrame()
-
-    with open('stop_hinglish.txt', 'r', encoding='utf-8') as f:
-        stop_words = f.read()
-
-    if selected_user != 'Overall':
-        df = df[df['user'] == selected_user]
-
-    temp = df[df['user'] != 'group_notification']
-    temp = temp[temp['message'] != '<Media omitted>\n']
-
-    words = []
-    for message in temp['message']:
-        for word in message.lower().split():
-            if word not in stop_words:
-                words.append(word)
-
-    return pd.DataFrame(Counter(words).most_common(20))
-
-
-def emoji_helper(selected_user, df):
-    if selected_user != 'Overall':
-        df = df[df['user'] == selected_user]
-
-    emojis = []
-    for message in df['message']:
-        emojis.extend([c for c in message if emoji.is_emoji(c)])
-
-    return pd.DataFrame(Counter(emojis).most_common(len(Counter(emojis))))
-
-
-def monthly_timeline(selected_user, df):
-    if selected_user != 'Overall':
-        df = df[df['user'] == selected_user]
-
-    timeline = df.groupby(['year', 'month_num', 'month']).count()['message'].reset_index()
-    timeline['time'] = timeline['month'] + "-" + timeline['year'].astype(str)
-    return timeline
-
-
-def daily_timeline(selected_user, df):
-    if selected_user != 'Overall':
-        df = df[df['user'] == selected_user]
-
-    return df.groupby('only_date').count()['message'].reset_index()
-
+    text = " ".join(df['message'])
+    return WordCloud(width=500, height=500, background_color="white").generate(text)
 
 def week_activity_map(selected_user, df):
     if selected_user != 'Overall':
         df = df[df['user'] == selected_user]
-
     return df['day_name'].value_counts()
-
 
 def month_activity_map(selected_user, df):
     if selected_user != 'Overall':
         df = df[df['user'] == selected_user]
-
     return df['month'].value_counts()
-
-
-def activity_heatmap(selected_user, df):
-    if selected_user != 'Overall':
-        df = df[df['user'] == selected_user]
-
-    return df.pivot_table(index='day_name', columns='period', values='message', aggfunc='count').fillna(0)
-
-
-# 🔍 IMPROVED SMART CHAT SEARCH (WhatsApp-style first, then semantic fallback)
-def smart_chat_search(df, query, selected_user="Overall", top_n=10, threshold=0.45, context_window=2):
-    if selected_user != "Overall":
-        df = df[df['user'] == selected_user]
-
-    df = df[df['message'].str.strip() != '']
-    df = df[~df['message'].str.contains('<Media omitted>', na=False)].reset_index(drop=True)
-
-    # Try keyword match first
-    pattern = r'\b' + re.escape(query) + r'\b'
-    keyword_matches = df[df['message'].str.contains(pattern, case=False, na=False, regex=True)]
-    if not keyword_matches.empty:
-        matched_indices = keyword_matches.index.tolist()
-    else:
-        # Fallback to semantic search
-        messages = df['message'].tolist()
-        if not messages:
-            return []
-
-        message_embeddings = embedder.encode(messages, convert_to_tensor=True)
-        query_embedding = embedder.encode(query, convert_to_tensor=True)
-
-        similarities = cosine_similarity(
-            [query_embedding.cpu().numpy()], message_embeddings.cpu().numpy()
-        )[0]
-
-        df['score'] = similarities
-        matched_indices = df[df['score'] >= threshold].sort_values(by='score', ascending=False).head(top_n).index.tolist()
-
-    # Now gather surrounding messages for context
-    context_blocks = []
-    seen = set()
-    for idx in matched_indices:
-        start = max(0, idx - context_window)
-        end = min(len(df), idx + context_window + 1)
-        for i in range(start, end):
-            if i not in seen:
-                context_blocks.append((i, df.loc[i]))
-                seen.add(i)
-
-    # Sort by index to preserve flow
-    context_blocks.sort(key=lambda x: x[0])
-
-    return [df.loc[i] for i in sorted(seen)]
-
-
-
-
-# 🔍 Email Reports Content 
-def generate_timeline_charts(selected_user, df):
-    imgs = []
-
-    # Monthly timeline
-    timeline = monthly_timeline(selected_user, df)
-    fig = px.line(timeline, x='time', y='message', title="Monthly Message Count", template='plotly_white')
-    buf = io.BytesIO()
-    fig.write_image(buf, format='png')
-    imgs.append(('monthly.png', buf.getvalue()))
-
-    # Daily timeline
-    daily = daily_timeline(selected_user, df)
-    fig = px.line(daily, x='only_date', y='message', title="Daily Message Count", color_discrete_sequence=['#2ca02c'], template='plotly_white')
-    buf = io.BytesIO()
-    fig.write_image(buf, format='png')
-    imgs.append(('daily.png', buf.getvalue()))
-
-    return imgs
-
 
 def generate_activity_maps(selected_user, df):
     imgs = []
 
-    # Weekly bar
-    busy_day = week_activity_map(selected_user, df)
-    fig = px.bar(busy_day, x=busy_day.index, y=busy_day.values, title="Most Busy Days", color=busy_day.index, template="plotly_white")
+    busy_day = week_activity_map(selected_user, df).reset_index()
+    busy_day.columns = ["day", "count"]
+
+    fig = px.bar(busy_day, x="day", y="count", color="day", template="plotly_white")
     buf = io.BytesIO()
-    fig.write_image(buf, format='png')
-    imgs.append(('busy_days.png', buf.getvalue()))
+    fig.write_image(buf, format="png")
+    imgs.append(("busy_days.png", buf.getvalue()))
 
-    # Monthly bar
-    busy_month = month_activity_map(selected_user, df)
-    fig = px.bar(busy_month, x=busy_month.index, y=busy_month.values, title="Most Busy Months", color=busy_month.index, template="plotly_white")
+    busy_month = month_activity_map(selected_user, df).reset_index()
+    busy_month.columns = ["month", "count"]
+
+    fig = px.bar(busy_month, x="month", y="count", color="month", template="plotly_white")
     buf = io.BytesIO()
-    fig.write_image(buf, format='png')
-    imgs.append(('busy_months.png', buf.getvalue()))
+    fig.write_image(buf, format="png")
+    imgs.append(("busy_months.png", buf.getvalue()))
 
-    # Heatmap
-    heatmap_data = activity_heatmap(selected_user, df)
-    if not heatmap_data.empty:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.heatmap(heatmap_data, cmap='YlGnBu', ax=ax)
-        plt.title("Weekly Activity Heatmap")
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png')
-        plt.close(fig)
-        imgs.append(('heatmap.png', buf.getvalue()))
-
-    return imgs
-
-
-def generate_content_charts(selected_user, df):
-    imgs = []
-
-    # Wordcloud
-    wc_img = create_wordcloud(selected_user, df)
-    fig, ax = plt.subplots(figsize=(8, 6), facecolor='white')
-    ax.imshow(wc_img, interpolation='bilinear')
-    ax.axis("off")
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight')
-    plt.close(fig)
-    imgs.append(('wordcloud.png', buf.getvalue()))
-
-    # Common words bar
-    common_df = most_common_words(selected_user, df).head(15)
-    fig = px.bar(common_df, x=1, y=0, orientation='h', labels={'0': 'Words', '1': 'Frequency'}, color_discrete_sequence=['#d62728'], template="plotly_white")
-    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-    buf = io.BytesIO()
-    fig.write_image(buf, format='png')
-    imgs.append(('common_words.png', buf.getvalue()))
-
-    # Emoji pie chart
-    emoji_df = emoji_helper(selected_user, df)
-    if not emoji_df.empty:
-        emoji_df.columns = ['Emoji', 'Count']
-        fig = px.pie(emoji_df.head(5), values='Count', names='Emoji', title="Top 5 Emojis", hole=.4, template='plotly_white')
-        fig.update_traces(textposition='inside', textinfo='percent+label')
-        buf = io.BytesIO()
-        fig.write_image(buf, format='png')
-        imgs.append(('emoji.png', buf.getvalue()))
-
-    return imgs
-
-
-def generate_user_leaderboard_charts(df):
-    imgs = []
-    x, _ = most_busy_users(df)
-    fig = px.bar(x, x=x.index, y=x.values, color=x.index, title="Top Users by Message Count", template="plotly_white")
-    buf = io.BytesIO()
-    fig.write_image(buf, format='png')
-    imgs.append(('leaderboard.png', buf.getvalue()))
     return imgs
